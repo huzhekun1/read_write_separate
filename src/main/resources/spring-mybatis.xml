@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+	   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tx="http://www.springframework.org/schema/tx"
+	   xmlns:aop="http://www.springframework.org/schema/aop"
+	   xmlns:context="http://www.springframework.org/schema/context"
+	   xsi:schemaLocation="http://www.springframework.org/schema/beans
+                        http://www.springframework.org/schema/beans/spring-beans-3.1.xsd
+                        http://www.springframework.org/schema/tx
+                        http://www.springframework.org/schema/tx/spring-tx.xsd
+                        http://www.springframework.org/schema/aop
+                        http://www.springframework.org/schema/aop/spring-aop.xsd
+						http://www.springframework.org/schema/context
+                        http://www.springframework.org/schema/context/spring-context-3.1.xsd  ">
+
+	<context:component-scan base-package="com.ithzk.rws">
+		<context:exclude-filter type="annotation" expression="org.springframework.stereotype.Controller" />
+	</context:component-scan>
+
+	<!-- 配置数据库相关参数properties属性-->
+	<bean class="com.ithzk.rws.utils.EncryptPropertyPlaceholderConfigurer">
+		<property name="locations">
+			<list>
+				<value>classpath:jdbc.properties</value>
+			</list>
+		</property>
+		<!--<property name="fileEncoding" value="UTF-8"/>-->
+	</bean>
+	<!-- 数据库连接池-->
+	<bean id="abstractDataSource" class="com.alibaba.druid.pool.DruidDataSource" abstract="true" init-method="init" destroy-method="close">
+		<!-- 配置初始化大小、最小、最大 -->
+		<!-- 通常来说，只需要修改initialSize、minIdle、maxActive -->
+		<property name="initialSize" value="${db.master.initialSize}" />
+		<property name="minIdle" value="${db.master.minIdle}" />
+		<property name="maxActive" value="${db.master.maxActive}" />
+		<!-- 配置获取连接等待超时的时间 -->
+		<property name="maxWait" value="${db.master.maxWait}" />
+		<!-- 默认值是 true ，当从连接池取连接时，验证这个连接是否有效 -->
+		<property name="testOnBorrow" value="true" />
+		<!-- 指明连接是否被空闲连接回收器(如果有)进行检验.如果检测失败,则连接将被从池中去除.
+		注意: 设置为true后如果要生效,validationQuery参数必须设置为非空字符串 -->
+		<property name="testWhileIdle" value="true" />
+		<!-- 默认值是 flase, 当从把该连接放回到连接池的时，验证这个连接是否有效 -->
+		<property name="testOnReturn" value="false" />
+		<!--用来验证从连接池取出的连接,在将连接返回给调用者之前.如果指定,则查询必须是一个SQL SELECT并且必须返回至少一行记录-->
+		<property name="validationQuery" value="SELECT 'x'" />
+		<!-- 配置一个连接在池中最小生存的时间，单位是毫秒 -->
+		<property name="minEvictableIdleTimeMillis" value="30000" />
+		<property name="removeAbandoned" value="true" />
+		<property name="removeAbandonedTimeout" value="180" />
+		<!-- 关闭abanded连接时输出错误日志 -->
+		<property name="logAbandoned" value="${db.master.logAbandoned}" />
+		<!-- 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒 -->
+		<property name="timeBetweenEvictionRunsMillis" value="60000" />
+		<property name="poolPreparedStatements" value="true" />
+		<property name="maxPoolPreparedStatementPerConnectionSize" value="50" />
+		<property name="filters" value="stat" />
+	</bean>
+
+	<!-- 主库 -->
+	<bean id="master" parent="abstractDataSource">
+		<!-- 基本属性driverClassName、 url、user、password -->
+		<property name="driverClassName" value="${db.driver}" />
+		<property name="url" value="${db.master.url}" />
+		<property name="username" value="${db.master.username}" />
+		<property name="password" value="${db.master.password}" />
+	</bean>
+
+	<!-- 从库 -->
+	<bean id="slave" parent="abstractDataSource">
+		<!-- 基本属性driverClassName、 url、user、password -->
+		<property name="driverClassName" value="${db.driver}" />
+		<property name="url" value="${db.slave.url}" />
+		<property name="username" value="${db.slave.username}" />
+		<property name="password" value="${db.slave.password}" />
+	</bean>
+
+	<!-- 配置动态路由 -->
+	<bean id="dynamicDataSourceRouting" class="com.ithzk.rws.utils.dynamic.DynamicDataSource">
+		<property name="targetDataSources">
+			<map>
+				<entry key="master" value-ref="master"/>
+				<entry key="slave" value-ref="slave"/>
+			</map>
+		</property>
+		<!-- 设置默认的数据源 -->
+		<property name="defaultTargetDataSource" ref="master"/>
+	</bean>
+
+	<!-- 配置数据源 -->
+	<bean id="dataSource" class="org.springframework.jdbc.datasource.LazyConnectionDataSourceProxy">
+		<property name="targetDataSource" ref="dynamicDataSourceRouting"/>
+	</bean>
+
+	<bean id="sqlSessionFactoryWrite" class="org.mybatis.spring.SqlSessionFactoryBean">
+		<property name="dataSource" ref="dataSource" />
+		<!-- 配置mybatis全局配置文件 -->
+		<property name="configLocation" value="classpath:mybatis-config.xml" />
+		<!-- 自动扫描mapping.xml文件 -->
+		<property name="mapperLocations" value="classpath:mapper/*.xml"/>
+	</bean>
+
+	<!-- 动态扫描Dao -->
+	<bean class="org.mybatis.spring.mapper.MapperScannerConfigurer">
+		<property name="basePackage" value="com.ithzk.rws.dao"/>
+	</bean>
+
+	<!-- (事务管理)transaction manager, use JtaTransactionManager for global tx -->
+	<bean id="transactionManager" class="org.springframework.jdbc.datasource.DataSourceTransactionManager">
+		<property name="dataSource" ref="dataSource" />
+	</bean>
+	<!-- 配置事务属性 -->
+	<tx:advice id="txAdvice" transaction-manager="transactionManager" >
+		<tx:attributes>
+			<!--定义查询方法都是只读的 -->
+			<tx:method name="get*" read-only="true" />
+			<tx:method name="list*" read-only="true" />
+			<tx:method name="count*" read-only="true" />
+			<tx:method name="query*" read-only="true" />
+			<tx:method name="find*" read-only="true" />
+			<tx:method name="select*" read-only="true" />
+
+			<!-- 主库执行操作，事务传播行为定义为默认行为 -->
+			<tx:method name="save*" propagation="REQUIRED" />
+			<tx:method name="update*" propagation="REQUIRED" />
+			<tx:method name="remove*" propagation="REQUIRED" />
+			<tx:method name="delete*" propagation="REQUIRED" />
+			<tx:method name="insert*" propagation="REQUIRED" />
+
+			<!--其他方法使用默认事务策略 -->
+			<tx:method name="*" />
+		</tx:attributes>
+	</tx:advice>
+	<!-- 配置事务的切点,并把事务切点和事务属性不关联起来 -->
+	<aop:config >
+		<aop:pointcut id="txPointCut" expression="execution(* com.ithzk.rws.service.impl.*.*(..))" />
+		<!-- 应用事务策略到Service切面 -->
+		<aop:advisor advice-ref="txAdvice" pointcut-ref="txPointCut" order="2"/>
+		<!-- 将切面应用到自定义的切面处理器上，-9999保证该切面优先级最高执行 -->
+		<aop:aspect ref="dataSourceAspect" order="-9999">
+			<aop:before method="before" pointcut-ref="txPointCut" />
+		</aop:aspect>
+	</aop:config>
+
+	<!-- 定义AOP切面处理器 -->
+	<bean id="dataSourceAspect" class="com.ithzk.rws.utils.aop.DataSourceAspect">
+		<!-- 指定事务策略 -->
+		<property name="txAdvice" ref="txAdvice"/>
+		<!-- 指定slave方法的前缀（非必须） -->
+		<property name="slaveMethodStart" value="query,find,get,select,list,count,select"/>
+	</bean>
+
+</beans>
+
